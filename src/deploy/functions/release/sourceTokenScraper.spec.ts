@@ -5,21 +5,21 @@ import { SourceTokenScraper } from "./sourceTokenScraper";
 describe("SourceTokenScraper", () => {
   it("immediately provides the first result", async () => {
     const scraper = new SourceTokenScraper();
-    await expect(scraper.withToken(async (t) => t)).to.eventually.be.undefined;
+    await expect(scraper.withToken((getToken) => getToken())).to.eventually.be.undefined;
   });
 
   it("provides results after the first operation completes", async () => {
     const scraper = new SourceTokenScraper();
     // First result comes right away;
-    await expect(scraper.withToken(async (t) => t)).to.eventually.be.undefined;
+    await expect(scraper.withToken((getToken) => getToken())).to.eventually.be.undefined;
 
     let gotResult = false;
     const timeout = new Promise((resolve, reject) => {
       setTimeout(() => reject(new Error("Timeout")), 10);
     });
-    const getResult = scraper.withToken(async (t) => {
+    const getResult = scraper.withToken(async (getToken) => {
       gotResult = true;
-      return t;
+      return getToken();
     });
     await expect(Promise.race([getResult, timeout])).to.be.rejectedWith("Timeout");
     expect(gotResult).to.be.false;
@@ -31,7 +31,7 @@ describe("SourceTokenScraper", () => {
   it("provides tokens from an operation", async () => {
     const scraper = new SourceTokenScraper();
     // First result comes right away
-    await expect(scraper.withToken(async (t) => t)).to.eventually.be.undefined;
+    await expect(scraper.withToken((getToken) => getToken())).to.eventually.be.undefined;
 
     scraper.poller({
       metadata: {
@@ -39,31 +39,31 @@ describe("SourceTokenScraper", () => {
         target: "projects/p/locations/l/functions/f",
       },
     });
-    await expect(scraper.withToken(async (t) => t)).to.eventually.equal("magic token");
+    await expect(scraper.withToken((getToken) => getToken())).to.eventually.equal("magic token");
   });
 
   it("refreshes token after timer expires", async () => {
     const scraper = new SourceTokenScraper(10);
-    await expect(scraper.withToken(async (t) => t)).to.eventually.be.undefined;
+    await expect(scraper.withToken((getToken) => getToken())).to.eventually.be.undefined;
     scraper.poller({
       metadata: {
         sourceToken: "magic token",
         target: "projects/p/locations/l/functions/f",
       },
     });
-    await expect(scraper.withToken(async (t) => t)).to.eventually.equal("magic token");
+    await expect(scraper.withToken((getToken) => getToken())).to.eventually.equal("magic token");
     const timeout = (duration: number): Promise<void> => {
       return new Promise<void>((resolve) => setTimeout(resolve, duration));
     };
     await timeout(50);
-    await expect(scraper.withToken(async (t) => t)).to.eventually.be.undefined;
+    await expect(scraper.withToken((getToken) => getToken())).to.eventually.be.undefined;
     scraper.poller({
       metadata: {
         sourceToken: "magic token #2",
         target: "projects/p/locations/l/functions/f",
       },
     });
-    await expect(scraper.withToken(async (t) => t)).to.eventually.equal("magic token #2");
+    await expect(scraper.withToken((getToken) => getToken())).to.eventually.equal("magic token #2");
   });
 
   it("tries to fetch a new source token upon abort", async () => {
@@ -74,14 +74,14 @@ describe("SourceTokenScraper", () => {
       }),
     ).to.be.rejectedWith("Failed deploy");
 
-    await expect(scraper.withToken(async (t) => t)).to.eventually.be.undefined;
+    await expect(scraper.withToken((getToken) => getToken())).to.eventually.be.undefined;
     scraper.poller({
       metadata: {
         sourceToken: "magic token",
         target: "projects/p/locations/l/functions/f",
       },
     });
-    await expect(scraper.withToken(async (t) => t)).to.eventually.equal("magic token");
+    await expect(scraper.withToken((getToken) => getToken())).to.eventually.equal("magic token");
   });
 
   it("concurrent requests for source token", async () => {
@@ -89,7 +89,7 @@ describe("SourceTokenScraper", () => {
 
     const promises = [];
     for (let i = 0; i < 3; i++) {
-      promises.push(scraper.withToken(async (t) => t));
+      promises.push(scraper.withToken((getToken) => getToken()));
     }
     scraper.poller({
       metadata: {
@@ -127,8 +127,8 @@ describe("SourceTokenScraper", () => {
     await firstOpStarted;
 
     // Two callers start waiting for the token
-    const waiting1 = scraper.withToken(async (t) => t);
-    const waiting2 = scraper.withToken(async (t) => t);
+    const waiting1 = scraper.withToken((getToken) => getToken());
+    const waiting2 = scraper.withToken((getToken) => getToken());
 
     // Fail the ongoing operation, triggering abort
     failFirst(new Error("Deploy failed"));
@@ -140,11 +140,11 @@ describe("SourceTokenScraper", () => {
     expect(res2).to.be.undefined;
 
     // A subsequent caller (or retrying task) should be able to initiate a new fetch
-    const retryToken = await scraper.withToken(async (t) => t);
+    const retryToken = await scraper.withToken((getToken) => getToken());
     expect(retryToken).to.be.undefined;
 
     // And subsequent waiters get the token once poller completes
-    const waiterAfterRetry = scraper.withToken(async (t) => t);
+    const waiterAfterRetry = scraper.withToken((getToken) => getToken());
     scraper.poller({
       metadata: {
         sourceToken: "new token",
@@ -156,8 +156,8 @@ describe("SourceTokenScraper", () => {
 
   it("withToken returns operation result on success", async () => {
     const scraper = new SourceTokenScraper();
-    const result = await scraper.withToken(async (token) => {
-      expect(token).to.be.undefined;
+    const result = await scraper.withToken(async (getToken) => {
+      expect(await getToken()).to.be.undefined;
       return "success";
     });
     expect(result).to.equal("success");
@@ -174,8 +174,8 @@ describe("SourceTokenScraper", () => {
     await expect(failedOp).to.be.rejectedWith("Deploy failed");
 
     // A subsequent caller should be able to initiate a new fetch without deadlock
-    const nextResult = await scraper.withToken(async (token) => {
-      expect(token).to.be.undefined;
+    const nextResult = await scraper.withToken(async (getToken) => {
+      expect(await getToken()).to.be.undefined;
       return "recovered";
     });
     expect(nextResult).to.equal("recovered");
@@ -184,21 +184,22 @@ describe("SourceTokenScraper", () => {
   it("handles concurrent callers when an existing token has expired without hanging waiters", async () => {
     const scraper = new SourceTokenScraper(10);
 
-    await expect(scraper.withToken(async (t) => t)).to.eventually.be.undefined;
+    await expect(scraper.withToken((getToken) => getToken())).to.eventually.be.undefined;
     scraper.poller({
       metadata: {
         sourceToken: "initial-token",
         target: "projects/p/locations/us-central1/functions/f1",
       },
     });
-    await expect(scraper.withToken(async (t) => t)).to.eventually.equal("initial-token");
+    await expect(scraper.withToken((getToken) => getToken())).to.eventually.equal("initial-token");
 
     await new Promise<void>((resolve) => setTimeout(resolve, 30));
 
     // Launch 3 concurrent calls after token expiry; only the first should fetch (receiving undefined),
     // while the other 2 wait for the refreshed token without overwriting this.promise.
     const expiredCalls = [
-      scraper.withToken(async (t) => {
+      scraper.withToken(async (getToken) => {
+        const t = await getToken();
         if (t === undefined) {
           scraper.poller({
             metadata: {
@@ -209,11 +210,43 @@ describe("SourceTokenScraper", () => {
         }
         return t;
       }),
-      scraper.withToken(async (t) => t),
-      scraper.withToken(async (t) => t),
+      scraper.withToken((getToken) => getToken()),
+      scraper.withToken((getToken) => getToken()),
     ];
 
     const results = await Promise.all(expiredCalls);
     expect(results).to.deep.equal([undefined, "refreshed-token", "refreshed-token"]);
+  });
+
+  it("refreshes expired token across retry loops inside withToken", async () => {
+    const scraper = new SourceTokenScraper(15);
+
+    await expect(scraper.withToken((getToken) => getToken())).to.eventually.be.undefined;
+    scraper.poller({
+      metadata: {
+        sourceToken: "initial-token",
+        target: "projects/p/locations/us-central1/functions/f1",
+      },
+    });
+
+    const observedTokens: Array<string | undefined> = [];
+    await scraper.withToken(async (getToken) => {
+      // Attempt 1 sees valid initial token
+      observedTokens.push(await getToken());
+      // Simulate backoff exceeding token expiry
+      await new Promise<void>((resolve) => setTimeout(resolve, 30));
+      // Attempt 2 sees expired token -> undefined and triggers refresh
+      observedTokens.push(await getToken());
+      scraper.poller({
+        metadata: {
+          sourceToken: "refreshed-token",
+          target: "projects/p/locations/us-central1/functions/f2",
+        },
+      });
+      // Attempt 3 sees the newly refreshed token
+      observedTokens.push(await getToken());
+    });
+
+    expect(observedTokens).to.deep.equal(["initial-token", undefined, "refreshed-token"]);
   });
 });

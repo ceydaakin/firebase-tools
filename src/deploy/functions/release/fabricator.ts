@@ -492,9 +492,10 @@ export class Fabricator {
       apiFunction.httpsTrigger.securityLevel = "SECURE_ALWAYS";
     }
     const resultFunction = await scraper
-      .withToken((token) =>
+      .withToken((getToken) =>
         this.functionExecutor.run(
           async () => {
+            const token = await getToken();
             // Clear any token from a previous attempt so retries do not send a stale token.
             // Explicitly delete instead of setting undefined so proto.fieldMasks() omits it.
             delete apiFunction.sourceToken;
@@ -626,45 +627,47 @@ export class Fabricator {
         .catch(rethrowAs(endpoint, "upsert eventarc channel"));
     }
 
-    let resultFunction: gcfV2.OutputCloudFunction | null = null;
-    while (!resultFunction) {
-      resultFunction = await scraper
-        .withToken((token) =>
-          this.functionExecutor.run(
-            async () => {
-              if (apiFunction.buildConfig) {
-                // Clear any token from a previous attempt so retries do not send a stale token.
-                // Explicitly delete instead of setting undefined so proto.fieldMasks() omits it.
-                delete apiFunction.buildConfig.sourceToken;
-                if (experiments.isEnabled("functionsv2deployoptimizations") && token) {
-                  apiFunction.buildConfig.sourceToken = token;
+    const resultFunction = await scraper
+      .withToken(async (getToken) => {
+        let fn: gcfV2.OutputCloudFunction | null = null;
+        while (!fn) {
+          fn = await this.functionExecutor
+            .run(
+              async () => {
+                const token = await getToken();
+                if (apiFunction.buildConfig) {
+                  // Clear any token from a previous attempt so retries do not send a stale token.
+                  // Explicitly delete instead of setting undefined so proto.fieldMasks() omits it.
+                  delete apiFunction.buildConfig.sourceToken;
+                  if (experiments.isEnabled("functionsv2deployoptimizations") && token) {
+                    apiFunction.buildConfig.sourceToken = token;
+                  }
                 }
+                const op: { name: string } = await gcfV2.createFunction(apiFunction);
+                return await poller.pollOperation<gcfV2.OutputCloudFunction>({
+                  ...gcfV2PollerOptions,
+                  pollerName: `create-${endpoint.codebase}-${endpoint.region}-${endpoint.id}`,
+                  operationResourceName: op.name,
+                  onPoll: scraper.poller,
+                });
+              },
+              { retryPredicates: [isTransientError, isServiceAccountPropagationError] },
+            )
+            .catch(async (err: any) => {
+              // If the createFunction call returns RPC error code RESOURCE_EXHAUSTED (8),
+              // we have exhausted the underlying Cloud Run API quota. To retry, we need to
+              // first delete the GCF function resource, then call createFunction again.
+              if (err.code === CLOUD_RUN_RESOURCE_EXHAUSTED_CODE) {
+                // we have to delete the broken function before we can re-create it
+                await this.deleteV2Function(endpoint);
+                return null;
               }
-              const op: { name: string } = await gcfV2.createFunction(apiFunction);
-              return await poller.pollOperation<gcfV2.OutputCloudFunction>({
-                ...gcfV2PollerOptions,
-                pollerName: `create-${endpoint.codebase}-${endpoint.region}-${endpoint.id}`,
-                operationResourceName: op.name,
-                onPoll: scraper.poller,
-              });
-            },
-            { retryPredicates: [isTransientError, isServiceAccountPropagationError] },
-          ),
-        )
-        .catch(async (err: any) => {
-          // If the createFunction call returns RPC error code RESOURCE_EXHAUSTED (8),
-          // we have exhausted the underlying Cloud Run API quota. To retry, we need to
-          // first delete the GCF function resource, then call createFunction again.
-          if (err.code === CLOUD_RUN_RESOURCE_EXHAUSTED_CODE) {
-            // we have to delete the broken function before we can re-create it
-            await this.deleteV2Function(endpoint);
-            return null;
-          } else {
-            logger.error((err as Error).message);
-            throw new reporter.DeploymentError(endpoint, "create", err);
-          }
-        });
-    }
+              throw err;
+            });
+        }
+        return fn;
+      })
+      .catch(rethrowAs<gcfV2.OutputCloudFunction>(endpoint, "create"));
 
     endpoint.uri = resultFunction.url;
     const serviceName = resultFunction.serviceConfig?.service;
@@ -736,9 +739,10 @@ export class Fabricator {
     const apiFunction = gcf.functionFromEndpoint(endpoint, sourceUrl);
 
     const resultFunction = await scraper
-      .withToken((token) =>
+      .withToken((getToken) =>
         this.functionExecutor.run(
           async () => {
+            const token = await getToken();
             // Clear any token from a previous attempt so retries do not send a stale token.
             // Explicitly delete instead of setting undefined so proto.fieldMasks() omits it.
             delete apiFunction.sourceToken;
@@ -794,9 +798,10 @@ export class Fabricator {
     }
 
     const resultFunction = await scraper
-      .withToken((token) =>
+      .withToken((getToken) =>
         this.functionExecutor.run(
           async () => {
+            const token = await getToken();
             if (apiFunction.buildConfig) {
               // Clear any token from a previous attempt so retries do not send a stale token.
               // Explicitly delete instead of setting undefined so proto.fieldMasks() omits it.

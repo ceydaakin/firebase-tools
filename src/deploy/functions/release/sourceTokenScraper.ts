@@ -19,6 +19,7 @@ export class SourceTokenScraper {
   private promise: Promise<TokenFetchResult>;
   private expiry: number | undefined;
   private fetchState: TokenFetchState;
+  private currentFetcher: symbol | undefined;
 
   constructor(validDurationMs = 1500000) {
     this.tokenValidDurationMs = validDurationMs;
@@ -30,12 +31,24 @@ export class SourceTokenScraper {
    * Runs an operation with a source token.
    * If the operation throws, automatically aborts the token fetch to prevent deadlocks.
    */
-  async withToken<T>(fn: (token: string | undefined) => Promise<T>): Promise<T> {
-    const token = await this.getToken();
+  async withToken<T>(fn: (getToken: () => Promise<string | undefined>) => Promise<T>): Promise<T> {
+    const callerId = Symbol();
+    const initialToken = await this.getTokenForCaller(callerId);
+    let firstAttempt = true;
     try {
-      return await fn(token);
+      return await fn(async () => {
+        if (firstAttempt) {
+          firstAttempt = false;
+          if (initialToken === undefined) {
+            return undefined;
+          }
+        }
+        return this.getTokenForCaller(callerId);
+      });
     } catch (err) {
-      this.abort();
+      if (this.currentFetcher === callerId) {
+        this.abort();
+      }
       throw err;
     }
   }
@@ -43,17 +56,22 @@ export class SourceTokenScraper {
   private abort(): void {
     if (this.fetchState === "FETCHING") {
       this.fetchState = "NONE";
+      this.currentFetcher = undefined;
       const resolve = this.resolve;
       this.promise = new Promise((r) => (this.resolve = r));
       resolve({ aborted: true });
     }
   }
 
-  private async getToken(): Promise<string | undefined> {
+  private async getTokenForCaller(callerId: symbol): Promise<string | undefined> {
     if (this.fetchState === "NONE") {
       this.fetchState = "FETCHING";
+      this.currentFetcher = callerId;
       return undefined;
     } else if (this.fetchState === "FETCHING") {
+      if (this.currentFetcher === callerId) {
+        return undefined;
+      }
       const tokenResult = await this.promise;
       if (tokenResult.aborted) {
         return undefined;
@@ -62,6 +80,7 @@ export class SourceTokenScraper {
     } else if (this.fetchState === "VALID") {
       if (this.isTokenExpired()) {
         this.fetchState = "FETCHING";
+        this.currentFetcher = callerId;
         this.promise = new Promise((resolve) => (this.resolve = resolve));
         return undefined;
       }
@@ -95,6 +114,7 @@ export class SourceTokenScraper {
           aborted: false,
         });
         this.fetchState = "VALID";
+        this.currentFetcher = undefined;
         this.expiry = Date.now() + this.tokenValidDurationMs;
       }
     };
